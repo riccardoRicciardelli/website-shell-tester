@@ -269,6 +269,102 @@ LOG_HEADERS="false"      # Set to "true" to log all HTTP headers
 ./tester_robot.sh -t -f -a -u https://mysite.com
 ```
 
+## 🐳 Docker Stack Monitoring
+
+Tester Robot can be combined with Docker monitoring to create comprehensive infrastructure monitoring solutions.
+
+### Container Resource Monitoring
+Monitor Docker container resource usage and log stats continuously:
+
+```bash
+# Monitor Docker stack resources and log to file
+while true; do 
+  docker compose --env-file docker/.env stats --no-stream >> storage/logs/stats.log
+  sleep 1
+done
+```
+
+### Combined Website + Container Monitoring
+Run both website monitoring and container monitoring simultaneously:
+
+```bash
+# Terminal 1: Monitor website performance
+./tester_robot.sh -f -j 4 -u https://your-app.com -d 2
+
+# Terminal 2: Monitor container resources
+while true; do 
+  docker compose --env-file docker/.env stats --no-stream >> storage/logs/stats.log
+  sleep 1
+done
+```
+
+### Advanced Docker + Website Monitoring Setup
+
+Create a comprehensive monitoring script that combines both:
+
+```bash
+#!/bin/bash
+# monitor-stack.sh
+
+# Start container monitoring in background
+{
+    while true; do 
+        echo "[$(date -Iseconds)] DOCKER_STATS" >> storage/logs/monitoring.log
+        docker compose --env-file docker/.env stats --no-stream >> storage/logs/monitoring.log
+        sleep 5
+    done
+} &
+DOCKER_PID=$!
+
+# Start website monitoring in background  
+{
+    echo "[$(date -Iseconds)] WEBSITE_MONITORING_START" >> storage/logs/monitoring.log
+    ./tester_robot.sh -f -j 3 -u https://your-app.com -d 3 >> storage/logs/monitoring.log 2>&1
+} &
+WEBSITE_PID=$!
+
+# Wait for Ctrl+C and cleanup
+trap 'echo "Stopping monitoring..."; kill $DOCKER_PID $WEBSITE_PID; exit 0' INT
+wait
+```
+
+### Docker Environment Configuration
+Ensure your Docker environment file (`docker/.env`) contains:
+
+```bash
+# Docker environment variables
+COMPOSE_PROJECT_NAME=your-project
+COMPOSE_FILE=docker-compose.yml
+
+# Application URLs for monitoring
+APP_URL=https://your-app.com
+API_URL=https://api.your-app.com
+```
+
+### Log Analysis
+Analyze combined logs for correlations between container performance and website response times:
+
+```bash
+# View real-time monitoring logs
+tail -f storage/logs/monitoring.log
+
+# Extract Docker stats only
+grep "DOCKER_STATS" -A 20 storage/logs/monitoring.log
+
+# Extract website performance only  
+grep -E "\[INFO\]|\[ERROR\]" storage/logs/monitoring.log
+```
+
+### Docker Stack Health Checks
+Use Tester Robot to monitor Docker stack health endpoints:
+
+```bash
+# Monitor Docker stack health endpoints
+./tester_robot.sh -t -u http://localhost:8080/health    # App health
+./tester_robot.sh -t -u http://localhost:3306/health    # Database health  
+./tester_robot.sh -t -u http://localhost:6379/ping      # Redis health
+```
+
 ## ⚠️ Important Notes
 
 ### Asset Filtering
