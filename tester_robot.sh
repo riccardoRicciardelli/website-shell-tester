@@ -420,8 +420,8 @@ http_request() {
     [[ -n "$SESSION_TOKEN" ]] && cookie_string+=" tera_pa_session=${SESSION_TOKEN};"
     [[ -n "$cookie_string" ]] && curl_options+=(-b "${cookie_string%;}")
     
-    # Esegui la richiesta
-    curl -s "$url" "${curl_options[@]}" 2>/dev/null || echo "ERROR"
+    # Esegui la richiesta e pulisci null bytes per evitare warning bash
+    curl -s "$url" "${curl_options[@]}" 2>/dev/null | tr -d '\0' || echo "ERROR"
 }
 
 #======================================
@@ -609,26 +609,21 @@ http_extract_links() {
             filtered_links=$(echo "$raw_links" | grep -vE '\.(css|js|jpg|jpeg|png|gif|svg|ico|woff|woff2|ttf|eot|pdf|zip|rar|tar|gz|mp3|mp4|avi|mov|webm|webp)(\?.*)?$')
         fi
         
-        # Filtra per dominio e popola l'array rimuovendo duplicati
-        declare -A seen_links
+        # Filtra per dominio e popola l'array (versione semplificata e veloce)
         while IFS= read -r link; do
-            # Controlla per link relativi o domini con/senza www
-            if [[ -n "$link" ]] && [[ $link =~ ^(/|https?://($base_domain_no_www|$base_domain_with_www)) ]]; then
-                # Normalizza il link per il controllo duplicati
-                local normalized_link="$link"
-                
-                # Converte link relativi in assoluti per normalizzazione
-                if [[ $link =~ ^/ ]]; then
-                    normalized_link="${base_url}${link}"
-                fi
-                
-                # Aggiungi solo se non già visto
-                if [[ -z "${seen_links[$normalized_link]:-}" ]]; then
-                    seen_links["$normalized_link"]=1
-                    result_array+=("$link")
-                fi
+            [[ -n "$link" ]] || continue
+            # Controlla per link relativi o domini del sito
+            if [[ "$link" =~ ^/ ]] || [[ "$link" =~ ^https?://$base_domain_no_www ]] || [[ "$link" =~ ^https?://$base_domain_with_www ]]; then
+                result_array+=("$link")
             fi
         done <<< "$filtered_links"
+        
+        # Rimuovi duplicati usando sort (più veloce per molti elementi)
+        if [[ ${#result_array[@]} -gt 0 ]]; then
+            local unique_links
+            IFS=$'\n' unique_links=($(printf '%s\n' "${result_array[@]}" | sort -u))
+            result_array=("${unique_links[@]}")
+        fi
     fi
 }
 
@@ -947,16 +942,35 @@ main() {
         
         page=$(http_request "$URLVALUE" "true")
         
-        # Pulisci i null bytes dal risultato (senza warning)
-        page=$(printf '%s' "$page" | tr -d '\0')
+        # Pulisci caratteri problematici (null bytes e altri caratteri di controllo)
+        page=$(printf '%s' "$page" | tr -d '\0' | LC_ALL=C tr -cd '\11\12\15\40-\176\200-\377')
 
         status_code=$(http_extract_status_code "$page")
         
         base_domain=$(echo "$URLVALUE" | grep -oP 'https?://[^/]+' | sed 's|https\?://||')
         echo "Dominio rilevato: $base_domain"
+        echo "Status code estratto: $status_code"
         
         links_array=()
-        http_extract_links "$page" "$URLVALUE" links_array
+        echo "Inizio estrazione link..."
+        
+        # Estrazione diretta da curl con pulizia null bytes per siti WordPress
+        local base_domain_check=$(echo "$URLVALUE" | sed 's|https\?://||' | sed 's|/.*||')
+        local raw_links=$(curl -s --connect-timeout 20 --max-time 60 -k -L --max-redirs 10 "$URLVALUE" 2>/dev/null | tr -d '\0' | grep -oP 'href="[^"]*"' | sed 's/href="//g' | sed 's/"//g')
+        
+        # Usa grep per filtrare direttamente
+        local filtered_links=$(echo "$raw_links" | grep -E "^/|$base_domain_check")
+        links_array=()
+        while IFS= read -r link; do
+            [[ -n "$link" ]] && links_array+=("$link")
+        done <<< "$filtered_links"
+        
+        # Rimuovi duplicati velocemente
+        if [[ ${#links_array[@]} -gt 0 ]]; then
+            IFS=$'\n' links_array=($(printf '%s\n' "${links_array[@]}" | sort -u))
+        fi
+        
+        echo "Estrazione completata. Link array size: ${#links_array[@]}"
     
     echo "=== ESTRAZIONE LINK ==="
     if [[ ${#links_array[@]} -gt 0 ]]; then
