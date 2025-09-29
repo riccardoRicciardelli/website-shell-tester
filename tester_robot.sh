@@ -229,6 +229,10 @@ log_setup() {
     fi
 }
 
+#======================================
+# FUNZIONI HTTP
+#======================================
+
 http_setup_headers() {
     local target_url="$1"
     
@@ -307,10 +311,6 @@ http_request() {
     # Esegui la richiesta
     curl -s "$url" "${curl_options[@]}" 2>/dev/null || echo "ERROR"
 }
-
-#======================================
-# FUNZIONI HTTP
-#======================================
 
 #======================================
 # FUNZIONI DI ANALISI METRICHE

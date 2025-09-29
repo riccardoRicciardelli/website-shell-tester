@@ -13,7 +13,7 @@ Tester Robot is a powerful Bash script designed for continuous website monitorin
 
 - **Parallel Processing**: Execute multiple concurrent requests using configurable worker processes
 - **Link Following**: Automatically discover and test all links found on target pages
-- **Smart Filtering**: Automatically filters out static resources (CSS, JS, images, etc.)
+- **Smart Asset Filtering**: Configurable filtering of static resources (CSS, JS, images, etc.) with `-a` option
 - **Domain Filtering**: Tests only links belonging to the target domain
 - **Authentication Support**: Built-in support for XSRF tokens and session cookies
 - **Comprehensive Logging**: Structured logging with multiple severity levels
@@ -90,6 +90,7 @@ sudo yum install curl      # CentOS/RHEL
 | `-u URL` | Target URL to test (required) | - |
 | `-d SECONDS` | Delay between requests in seconds | 0.5 |
 | `-f` | Follow all links found on the page | disabled |
+| `-a` | Include assets (CSS, JS, images) in tests | disabled |
 | `-j NUMBER` | Number of parallel processes | 1 |
 | `-t` | Test mode: show found links and exit | disabled |
 | `-h` | Show help message | - |
@@ -109,6 +110,11 @@ sudo yum install curl      # CentOS/RHEL
 #### Follow Links with Parallel Processing
 ```bash
 ./tester_robot.sh -f -j 4 -u https://example.com
+```
+
+#### Include Assets in Testing
+```bash
+./tester_robot.sh -f -a -j 4 -u https://example.com
 ```
 
 #### Stress Testing
@@ -131,16 +137,34 @@ logs/[domain]-YYYY-MM-DD.log
 
 ### Log Levels
 - **DEBUG**: Detailed debugging information
-- **INFO**: General information and successful requests
+- **INFO**: General information and successful requests (includes performance metrics for HTML pages)
 - **WARNING**: 3xx HTTP status codes
 - **ERROR**: 4xx/5xx HTTP status codes and connection errors
 - **CRITICAL**: System-level errors
 
+### Performance Metrics
+For HTML pages, the script logs detailed performance metrics including:
+- **Total Time**: Complete request duration
+- **Connection Time**: Time to establish connection
+- **TTFB**: Time to First Byte (server response time)
+- **Transfer Size**: Downloaded content size
+- **Transfer Speed**: Download speed in KB/s
+
+Assets (CSS, JS, images) are logged with their type identification for easier debugging.
+
 ### Sample Log Output
 ```
+# Basic status logging
 [2025-09-29T10:30:15] INFO [[Main: https://example.com 200]]
 [2025-09-29T10:30:15] INFO [[Worker-1: https://example.com/about 200]]
 [2025-09-29T10:30:16] ERROR [[Worker-2: https://example.com/missing 404]]
+
+# Detailed performance metrics (for HTML pages)
+[2025-09-29T10:30:15] INFO [[Worker-1: https://example.com/profile [200] 972ms (conn:7ms ttfb:962ms) 177.5KB @182.6KB/s]]
+
+# Asset downloads (when using -a option)
+[2025-09-29T10:30:16] INFO [[Worker-2: https://example.com/style.css OK (CSS stylesheet downloaded)]]
+[2025-09-29T10:30:16] INFO [[Worker-3: https://example.com/logo.png OK (PNG image downloaded)]]
 ```
 
 ## 🔧 Configuration
@@ -229,22 +253,36 @@ LOG_HEADERS="false"      # Set to "true" to log all HTTP headers
 
 ### Site Crawling
 ```bash
-# Test all discoverable links
+# Test all discoverable links (excluding assets)
 ./tester_robot.sh -f -j 5 -u https://mysite.com
+
+# Test all links including assets (CSS, JS, images)
+./tester_robot.sh -f -a -j 5 -u https://mysite.com
 ```
 
 ### Quality Assurance
 ```bash
 # Test mode to check for broken links
 ./tester_robot.sh -t -f -u https://mysite.com
+
+# Include assets in quality assurance testing
+./tester_robot.sh -t -f -a -u https://mysite.com
 ```
 
 ## ⚠️ Important Notes
+
+### Asset Filtering
+By default, the script filters out static assets (CSS, JS, images, fonts, etc.) to focus on testing HTML pages and API endpoints. Use the `-a` option to include assets in testing when:
+- Testing CDN performance for static resources
+- Debugging asset loading issues
+- Performing comprehensive load testing including all resources
+- Monitoring complete user experience including asset download times
 
 ### Performance Considerations
 - Start with low parallel job counts (1-5) and increase gradually
 - Monitor system resources when using high concurrency
 - Adjust delays to respect target server capabilities
+- When using `-a` option, expect significantly more requests as assets will be tested
 
 ### Responsible Usage
 - Respect robots.txt and terms of service
