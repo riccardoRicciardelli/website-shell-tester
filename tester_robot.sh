@@ -279,6 +279,9 @@ http_request() {
     curl_options+=(--connect-timeout "$CONNECT_TIMEOUT")
     curl_options+=(--max-time "$MAX_TIME")
     
+    # Aggiungi metriche dettagliate di timing e performance
+    curl_options+=(--write-out "METRICS||%{http_code}||%{time_total}||%{time_namelookup}||%{time_connect}||%{time_appconnect}||%{time_pretransfer}||%{time_redirect}||%{time_starttransfer}||%{size_download}||%{size_upload}||%{size_header}||%{speed_download}||%{speed_upload}||%{num_connects}||%{num_redirects}||%{url_effective}\n")
+    
     # SSL options
     [[ "$INSECURE" == "true" ]] && curl_options+=(-k)
     
@@ -301,12 +304,101 @@ http_request() {
     [[ -n "$cookie_string" ]] && curl_options+=(-b "${cookie_string%;}")
     
     # Esegui la richiesta
-    curl -fis "$url" "${curl_options[@]}" 2>/dev/null || echo "ERROR"
+    curl -s "$url" "${curl_options[@]}" 2>/dev/null || echo "ERROR"
 }
 
 #======================================
 # FUNZIONI HTTP
 #======================================
+
+#======================================
+# FUNZIONI DI ANALISI METRICHE
+#======================================
+
+http_parse_metrics() {
+    local response="$1"
+    local -n metrics_result=$2
+    
+    # Inizializza l'array associativo
+    declare -A temp_metrics
+    
+    # Estrai la riga delle metriche e parseala usando awk
+    local metrics_line=$(echo "$response" | grep "^METRICS||" | tail -n1)
+    
+    if [[ -n "$metrics_line" ]]; then
+        # Usa awk per parsing più robusto
+        temp_metrics["status_code"]=$(echo "$metrics_line" | awk -F'\\|\\|' '{print $2}')
+        temp_metrics["time_total"]=$(echo "$metrics_line" | awk -F'\\|\\|' '{print $3}')
+        temp_metrics["time_namelookup"]=$(echo "$metrics_line" | awk -F'\\|\\|' '{print $4}')
+        temp_metrics["time_connect"]=$(echo "$metrics_line" | awk -F'\\|\\|' '{print $5}')
+        temp_metrics["time_appconnect"]=$(echo "$metrics_line" | awk -F'\\|\\|' '{print $6}')
+        temp_metrics["time_pretransfer"]=$(echo "$metrics_line" | awk -F'\\|\\|' '{print $7}')
+        temp_metrics["time_redirect"]=$(echo "$metrics_line" | awk -F'\\|\\|' '{print $8}')
+        temp_metrics["time_starttransfer"]=$(echo "$metrics_line" | awk -F'\\|\\|' '{print $9}')
+        temp_metrics["size_download"]=$(echo "$metrics_line" | awk -F'\\|\\|' '{print $10}')
+        temp_metrics["size_upload"]=$(echo "$metrics_line" | awk -F'\\|\\|' '{print $11}')
+        temp_metrics["size_header"]=$(echo "$metrics_line" | awk -F'\\|\\|' '{print $12}')
+        temp_metrics["speed_download"]=$(echo "$metrics_line" | awk -F'\\|\\|' '{print $13}')
+        temp_metrics["speed_upload"]=$(echo "$metrics_line" | awk -F'\\|\\|' '{print $14}')
+        temp_metrics["num_connects"]=$(echo "$metrics_line" | awk -F'\\|\\|' '{print $15}')
+        temp_metrics["num_redirects"]=$(echo "$metrics_line" | awk -F'\\|\\|' '{print $16}')
+        temp_metrics["url_effective"]=$(echo "$metrics_line" | awk -F'\\|\\|' '{print $17}')
+    else
+        # Valori di default in caso di errore
+        temp_metrics["status_code"]="ERROR"
+        temp_metrics["time_total"]="0"
+        temp_metrics["time_namelookup"]="0"
+        temp_metrics["time_connect"]="0"
+        temp_metrics["time_appconnect"]="0"
+        temp_metrics["time_pretransfer"]="0"
+        temp_metrics["time_redirect"]="0"
+        temp_metrics["time_starttransfer"]="0"
+        temp_metrics["size_download"]="0"
+        temp_metrics["size_upload"]="0"
+        temp_metrics["size_header"]="0"
+        temp_metrics["speed_download"]="0"
+        temp_metrics["speed_upload"]="0"
+        temp_metrics["num_connects"]="0"
+        temp_metrics["num_redirects"]="0"
+        temp_metrics["url_effective"]=""
+    fi
+    
+    # Copia nell'array di output
+    for key in "${!temp_metrics[@]}"; do
+        metrics_result["$key"]="${temp_metrics[$key]}"
+    done
+}
+
+http_format_performance_log() {
+    local -n metrics_data=$1
+    local url="$2"
+    local worker_id="${3:-Main}"
+    
+    local status_code="${metrics_data[status_code]}"
+    local time_total="${metrics_data[time_total]}"
+    local time_connect="${metrics_data[time_connect]}"
+    local time_starttransfer="${metrics_data[time_starttransfer]}"
+    local size_download="${metrics_data[size_download]}"
+    local speed_download="${metrics_data[speed_download]}"
+    local num_redirects="${metrics_data[num_redirects]}"
+    
+    # Converti i valori per una lettura più facile usando awk
+    local time_total_ms=$(echo "$time_total" | awk '{printf "%.0f", $1 * 1000}')
+    local time_connect_ms=$(echo "$time_connect" | awk '{printf "%.0f", $1 * 1000}')
+    local time_starttransfer_ms=$(echo "$time_starttransfer" | awk '{printf "%.0f", $1 * 1000}')
+    local size_kb=$(echo "$size_download" | awk '{printf "%.1f", $1 / 1024}')
+    local speed_kbps=$(echo "$speed_download" | awk '{printf "%.1f", $1 / 1024}')
+    
+    # Formato del messaggio di log dettagliato
+    local performance_msg="${worker_id}: ${url} [${status_code}] ${time_total_ms}ms (conn:${time_connect_ms}ms ttfb:${time_starttransfer_ms}ms) ${size_kb}KB @${speed_kbps}KB/s"
+    
+    # Aggiungi informazioni sui redirect se presenti
+    if [[ "$num_redirects" != "0" ]]; then
+        performance_msg+=" redirects:${num_redirects}"
+    fi
+    
+    echo "$performance_msg"
+}
 
 http_extract_status_code() {
     local page_content="$1"
@@ -380,24 +472,29 @@ worker_test_url() {
     
     # Gestisci timeout e errori
     if [[ "$page_result" == "ERROR" ]] || [[ -z "$page_result" ]]; then
-        status_code="ERROR"
         log_message "ERROR" "Worker-${worker_id}: $full_url ERROR" "$(log_get_filename "$URLVALUE")"
+        echo "$(date +"%Y%m%d.%H%M%S%3N") [W${worker_id}] $full_url [ERROR]"
     else
-        local status_code=$(http_extract_status_code "$page_result")
+        # Parse delle metriche di performance
+        declare -A metrics
+        http_parse_metrics "$page_result" metrics
         
-        # Log usando la funzione logger centralizzata
+        local status_code="${metrics[status_code]}"
+        local performance_msg=$(http_format_performance_log metrics "$full_url" "Worker-${worker_id}")
+        
+        # Log usando la funzione logger centralizzata con metriche
         local log_filename=$(log_get_filename "$URLVALUE")
         if [[ $status_code -ge 400 ]]; then
-            log_message "ERROR" "Worker-${worker_id}: $full_url $status_code" "$log_filename"
+            log_message "ERROR" "$performance_msg" "$log_filename"
         elif [[ $status_code -ge 300 ]]; then
-            log_message "WARNING" "Worker-${worker_id}: $full_url $status_code" "$log_filename"
+            log_message "WARNING" "$performance_msg" "$log_filename"
         else
-            log_message "INFO" "Worker-${worker_id}: $full_url $status_code" "$log_filename"
+            log_message "INFO" "$performance_msg" "$log_filename"
         fi
+        
+        # Output per il processo principale
+        echo "$(date +"%Y%m%d.%H%M%S%3N") [W${worker_id}] $full_url [${status_code}] ${metrics[time_total]}s"
     fi
-    
-    # Output per il processo principale
-    echo "$(date +"%Y%m%d.%H%M%S%3N") [W${worker_id}] $full_url [$status_code]"
 }
 
 #======================================
@@ -612,19 +709,25 @@ echo "Usando: curl (client HTTP)"
     while :; do
         # Testa URL principale
         page=$(http_request "$URLVALUE" "true")
-        status_code=$(http_extract_status_code "$page")
         
-        # Log usando la funzione logger centralizzata
+        # Parse delle metriche di performance
+        declare -A main_metrics
+        http_parse_metrics "$page" main_metrics
+        
+        local status_code="${main_metrics[status_code]}"
+        local performance_msg=$(http_format_performance_log main_metrics "$URLVALUE" "Main")
+        
+        # Log usando la funzione logger centralizzata con metriche
         log_file=$(log_get_filename "$URLVALUE")
         if [[ $status_code -ge 400 ]]; then
-            log_message "ERROR" "Main: $URLVALUE $status_code" "$log_file"
+            log_message "ERROR" "$performance_msg" "$log_file"
         elif [[ $status_code -ge 300 ]]; then
-            log_message "WARNING" "Main: $URLVALUE $status_code" "$log_file"
+            log_message "WARNING" "$performance_msg" "$log_file"
         else
-            log_message "INFO" "Main: $URLVALUE $status_code" "$log_file"
+            log_message "INFO" "$performance_msg" "$log_file"
         fi
         
-        echo -ne "$(date +"%Y%m%d.%H%M%S%3N") URL: $URLVALUE statuscode $status_code  \033[0K\r"
+        echo -ne "$(date +"%Y%m%d.%H%M%S%3N") URL: $URLVALUE [$status_code] ${main_metrics[time_total]}s  \033[0K\r"
         
         # Se FOLLOW è attivo, testa i link in parallelo
         if [[ $FOLLOW -eq 1 ]]; then
