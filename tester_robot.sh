@@ -71,6 +71,7 @@ FOLLOW=0
 TEST=0
 INCLUDE_ASSETS=0
 URLVALUE=""
+PROFILE=""
 
 # Array per i processi in background
 declare -a g_background_pids=()
@@ -183,6 +184,117 @@ config_validate_values() {
         [[ "$MIN_LOG_LEVEL" == "$level" ]] && level_valid=true && break
     done
     [[ "$level_valid" == false ]] && MIN_LOG_LEVEL="INFO"
+}
+
+#======================================
+# GESTIONE PROFILI CONFIGURAZIONE
+#======================================
+
+# Directory per profili e template
+readonly PROFILES_DIR="profiles"
+readonly TEMPLATES_DIR="templates"
+
+config_load_profile() {
+    local profile="$1"
+    local profile_file="$PROFILES_DIR/${profile}.env"
+    
+    if [[ ! -f "$profile_file" ]]; then
+        echo "ERROR: Profilo '$profile' non trovato in $profile_file"
+        echo "INFO: Profili disponibili:"
+        config_list_profiles
+        return 1
+    fi
+    
+    echo "INFO: Caricamento profilo: $profile"
+    
+    # Prima imposta i default, poi carica il profilo specifico
+    config_set_defaults
+    
+    # Carica il profilo specifico
+    config_load_headers_env "$profile_file"
+    
+    echo "INFO: Profilo '$profile' caricato con successo"
+    return 0
+}
+
+config_list_profiles() {
+    echo "Profili disponibili:"
+    if [[ -d "$PROFILES_DIR" ]]; then
+        for profile_file in "$PROFILES_DIR"/*.env; do
+            if [[ -f "$profile_file" ]]; then
+                local profile_name=$(basename "$profile_file" .env)
+                local description=""
+                
+                # Cerca una descrizione nel profilo
+                if grep -q "^# DESCRIPTION:" "$profile_file" 2>/dev/null; then
+                    description=$(grep "^# DESCRIPTION:" "$profile_file" | cut -d: -f2- | sed 's/^ *//')
+                fi
+                
+                if [[ -n "$description" ]]; then
+                    echo "  - $profile_name: $description"
+                else
+                    echo "  - $profile_name"
+                fi
+            fi
+        done
+    else
+        echo "  Nessun profilo trovato (directory $PROFILES_DIR non esistente)"
+    fi
+}
+
+config_create_profile_template() {
+    local profile="$1"
+    local profile_file="$PROFILES_DIR/${profile}.env"
+    
+    if [[ -f "$profile_file" ]]; then
+        echo "WARNING: Il profilo '$profile' esiste già in $profile_file"
+        return 1
+    fi
+    
+    # Crea il profilo basato sul .headers.env attuale o sui default
+    if [[ -f "$CONFIG_FILE" ]]; then
+        cp "$CONFIG_FILE" "$profile_file"
+    else
+        config_generate_default_profile > "$profile_file"
+    fi
+    
+    echo "INFO: Template profilo '$profile' creato in $profile_file"
+    echo "INFO: Modifica il file per personalizzare la configurazione"
+    return 0
+}
+
+config_generate_default_profile() {
+    cat <<EOF
+# DESCRIPTION: Profilo personalizzato generato automaticamente
+# Created: $(date)
+
+# Authentication tokens
+XSRF_TOKEN=""
+SESSION_TOKEN=""
+
+# Browser emulation headers
+USER_AGENT="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36"
+ACCEPT="text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7"
+ACCEPT_ENCODING="gzip, deflate, br, zstd"
+ACCEPT_LANGUAGE="it-IT,it;q=0.9,en-US;q=0.8,en;q=0.7"
+CONNECTION="keep-alive"
+UPGRADE_INSECURE_REQUESTS="1"
+
+# Connection settings
+CONNECT_TIMEOUT="15"
+MAX_TIME="60"
+INSECURE="true"
+FOLLOW_REDIRECTS="true"
+MAX_REDIRECTS="10"
+
+# Default execution parameters
+DEFAULT_DELAY="0.5"
+DEFAULT_PARALLEL_JOBS="1"
+
+# Logging configuration
+MIN_LOG_LEVEL="INFO"
+LOG_HEADERS="false"
+EOF
 }
 
 #======================================
@@ -439,7 +551,22 @@ http_format_performance_log() {
 http_extract_status_code() {
     local page_content="$1"
     local status_code
-    status_code=$(echo "${page_content}" | head -n 1 | grep -oP "[0-9]{3}")
+    
+    # Pulisci il content dai null bytes e estrai status code dalla riga METRICS
+    local clean_content=$(printf '%s' "$page_content" | tr -d '\0')
+    local metrics_line=$(printf '%s' "$clean_content" | grep "^METRICS||" | tail -n1)
+    
+    if [[ -n "$metrics_line" ]]; then
+        status_code=$(echo "$metrics_line" | awk -F'\\|\\|' '{print $2}')
+    else
+        # Se non c'è la riga METRICS, verifica se è un errore di connessione
+        if [[ "$page_content" == "ERROR" ]]; then
+            status_code="ERROR"
+        else
+            status_code="200"  # Assumiamo successo se non specificato
+        fi
+    fi
+    
     echo "$status_code"
 }
 
@@ -448,7 +575,13 @@ http_extract_links() {
     local url="$2"
     local -n result_array=$3
     
-    local base_domain=$(echo "$url" | grep -oP 'https?://[^/]+' | sed 's|https\?://||')
+    # Pulisci il contenuto dai null bytes
+    page_content=$(printf '%s' "$page_content" | tr -d '\0')
+    
+    local base_url=$(echo "$url" | grep -oP 'https?://[^/]+')
+    local base_domain=$(echo "$base_url" | sed 's|https\?://||')
+    local base_domain_no_www=$(echo "$base_domain" | sed 's/^www\.//')
+    local base_domain_with_www="www.$base_domain_no_www"
     
     # Reset dell'array
     result_array=()
@@ -479,13 +612,13 @@ http_extract_links() {
         # Filtra per dominio e popola l'array rimuovendo duplicati
         declare -A seen_links
         while IFS= read -r link; do
-            if [[ -n "$link" ]] && [[ $link =~ ^(/|$base_domain|https?://$base_domain) ]]; then
+            # Controlla per link relativi o domini con/senza www
+            if [[ -n "$link" ]] && [[ $link =~ ^(/|https?://($base_domain_no_www|$base_domain_with_www)) ]]; then
                 # Normalizza il link per il controllo duplicati
                 local normalized_link="$link"
                 
                 # Converte link relativi in assoluti per normalizzazione
                 if [[ $link =~ ^/ ]]; then
-                    local base_url=$(echo "$url" | grep -oP 'https?://[^/]+')
                     normalized_link="${base_url}${link}"
                 fi
                 
@@ -543,8 +676,14 @@ worker_test_url() {
                 log_message "INFO" "Worker-${worker_id}: $full_url OK ($asset_type downloaded)" "$(log_get_filename "$URLVALUE")"
                 echo "$(date +"%Y%m%d.%H%M%S%3N") [W${worker_id}] $full_url [ASSET_OK] $asset_type"
             else
-                log_message "ERROR" "Worker-${worker_id}: $full_url PARSE_ERROR" "$(log_get_filename "$URLVALUE")"
-                echo "$(date +"%Y%m%d.%H%M%S%3N") [W${worker_id}] $full_url [PARSE_ERROR]"
+                # Per pagine HTML, verifica se è un errore di connessione o semplicemente nessun link
+                if [[ "$page_result" == "ERROR" ]]; then
+                    log_message "ERROR" "Worker-${worker_id}: $full_url CONNECTION_ERROR" "$(log_get_filename "$URLVALUE")"
+                    echo "$(date +"%Y%m%d.%H%M%S%3N") [W${worker_id}] $full_url [CONNECTION_ERROR]"
+                else
+                    log_message "INFO" "Worker-${worker_id}: $full_url OK (no links found)" "$(log_get_filename "$URLVALUE")"
+                    echo "$(date +"%Y%m%d.%H%M%S%3N") [W${worker_id}] $full_url [NO_LINKS]"
+                fi
             fi
         else
             local performance_msg=$(http_format_performance_log metrics "$full_url" "Worker-${worker_id}")
@@ -629,13 +768,18 @@ util_show_help(){
     echo "  $0 [OPZIONI]"
     echo ""
     echo "OPZIONI:"
-    echo "  -u URL        URL da testare (obbligatorio)"
-    echo "  -d SECONDI    Delay tra le chiamate in secondi (default: 0.5)"
-    echo "  -f            Segui tutti i link trovati nella pagina"
-    echo "  -a            Includi assets (CSS, JS, immagini) nei test"
-    echo "  -j NUMERO     Numero di processi paralleli (default: 1)"
-    echo "  -t            Modalità test: mostra i link trovati ed esce"
-    echo "  -h            Mostra questa guida"
+    echo "  -u URL           URL da testare (obbligatorio)"
+    echo "  -d SECONDI       Delay tra le chiamate in secondi (default: 0.5)"
+    echo "  -f               Segui tutti i link trovati nella pagina"
+    echo "  -a               Includi assets (CSS, JS, immagini) nei test"
+    echo "  -j NUMERO        Numero di processi paralleli (default: 1)"
+    echo "  -t               Modalità test: mostra i link trovati ed esce"
+    echo "  -h               Mostra questa guida"
+    echo ""
+    echo "OPZIONI AVANZATE:"
+    echo "  --profile NOME   Usa profilo di configurazione predefinito"
+    echo "  --list-profiles  Mostra tutti i profili disponibili"
+    echo "  --help           Mostra questa guida (stesso di -h)"
     echo ""
     echo "ESEMPI:"
     echo "  # Test singolo"
@@ -656,13 +800,24 @@ util_show_help(){
     echo "  # Test assets per debugging performance"
     echo "  $0 -t -a -u https://example.com"
     echo ""
+    echo "  # Usa profilo Laravel per testing applicazione"
+    echo "  $0 --profile laravel -u https://mylaravelapp.com"
+    echo ""
+    echo "  # Usa profilo WordPress con follow links"
+    echo "  $0 --profile wordpress -f -j 3 -u https://myblog.com"
+    echo ""
+    echo "  # Lista tutti i profili disponibili"
+    echo "  $0 --list-profiles"
+    echo ""
 
     echo "CONFIGURAZIONE:"
-    echo "  File di configurazione: .headers.env"
-    echo "  • Headers HTTP personalizzabili"
+    echo "  File di configurazione: .headers.env (configurazione di base)"
+    echo "  Directory profili: profiles/ (configurazioni predefinite)"
+    echo "  • Headers HTTP personalizzabili per tipo di applicazione"
     echo "  • Token di autenticazione configurabili"
-    echo "  • Opzioni curl dinamiche"
-    echo "  • Copia .headers.env per personalizzare la configurazione"
+    echo "  • Profili ottimizzati per Laravel, WordPress, ecc."
+    echo "  • Opzioni curl dinamiche per ogni profilo"
+    echo "  • Usa --profile NOME per caricare configurazioni predefinite"
     echo ""
     echo "FUNZIONALITÀ:"
     echo "  • Estrazione automatica dei link dalla pagina"
@@ -696,8 +851,52 @@ main() {
         exit 1
     fi
     
-    # Carica la configurazione prima di processare gli argomenti
-    config_load_headers_env "$CONFIG_FILE"
+    # Gestione opzioni lunghe (prima di getopts)
+    local args=("$@")
+    local filtered_args=()
+    local i=0
+    
+    while [[ $i -lt ${#args[@]} ]]; do
+        case "${args[i]}" in
+            --profile)
+                if [[ $((i + 1)) -lt ${#args[@]} ]]; then
+                    PROFILE="${args[$((i + 1))]}"
+                    i=$((i + 2))
+                else
+                    echo "Errore: --profile richiede un valore"
+                    exit 1
+                fi
+                ;;
+            --profile=*)
+                PROFILE="${args[i]#*=}"
+                i=$((i + 1))
+                ;;
+            --list-profiles)
+                echo "Profili disponibili:"
+                config_list_profiles
+                exit 0
+                ;;
+            --help)
+                util_show_help
+                exit 0
+                ;;
+            *)
+                filtered_args+=("${args[i]}")
+                i=$((i + 1))
+                ;;
+        esac
+    done
+    
+    # Imposta i parametri filtrati per getopts
+    set -- "${filtered_args[@]}"
+    
+    # Carica profilo se specificato (prima della configurazione standard)
+    if [[ -n "$PROFILE" ]]; then
+        config_load_profile "$PROFILE" || exit 1
+    else
+        # Carica la configurazione standard
+        config_load_headers_env "$CONFIG_FILE"
+    fi
 
     while getopts d:u:j:hfta OPTIONS; do
         case "${OPTIONS}" in
@@ -733,7 +932,9 @@ main() {
     # Log delle informazioni di configurazione
     log_message "INFO" "Utilizzando curl per le richieste HTTP"
     
-    if [[ -f "$CONFIG_FILE" ]]; then
+    if [[ -n "$PROFILE" ]]; then
+        log_message "INFO" "Configurazione attiva: profilo '$PROFILE' (profiles/$PROFILE.env)"
+    elif [[ -f "$CONFIG_FILE" ]]; then
         log_message "INFO" "Configurazione caricata da: $CONFIG_FILE"
     else
         log_message "INFO" "Usando configurazione di default (file $CONFIG_FILE non trovato)"
@@ -745,6 +946,9 @@ main() {
     if [[ $TEST -eq 1 ]]; then
         
         page=$(http_request "$URLVALUE" "true")
+        
+        # Pulisci i null bytes dal risultato (senza warning)
+        page=$(printf '%s' "$page" | tr -d '\0')
 
         status_code=$(http_extract_status_code "$page")
         
@@ -799,8 +1003,14 @@ echo "Usando: curl (client HTTP)"
         # Log usando la funzione logger centralizzata con metriche
         log_file=$(log_get_filename "$URLVALUE")
         if [[ "$status_code" == "ERROR" ]] || [[ -z "$status_code" ]]; then
-            log_message "ERROR" "Main: $URLVALUE PARSE_ERROR" "$log_file"
-            echo -ne "$(date +"%Y%m%d.%H%M%S%3N") URL: $URLVALUE [PARSE_ERROR]  \033[0K\r"
+            # Verifica se è un errore di connessione o semplicemente nessun link
+            if [[ "$page" == "ERROR" ]]; then
+                log_message "ERROR" "Main: $URLVALUE CONNECTION_ERROR" "$log_file"
+                echo -ne "$(date +"%Y%m%d.%H%M%S%3N") URL: $URLVALUE [CONNECTION_ERROR]  \033[0K\r"
+            else
+                log_message "INFO" "Main: $URLVALUE OK (no links found)" "$log_file"
+                echo -ne "$(date +"%Y%m%d.%H%M%S%3N") URL: $URLVALUE [NO_LINKS]  \033[0K\r"
+            fi
         else
             if [[ $status_code -ge 400 ]]; then
                 log_message "ERROR" "$performance_msg" "$log_file"
