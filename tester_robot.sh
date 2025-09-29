@@ -69,6 +69,7 @@ VERBOSE=""
 HELP=0
 FOLLOW=0
 TEST=0
+INCLUDE_ASSETS=0
 URLVALUE=""
 
 # Array per i processi in background
@@ -315,6 +316,40 @@ http_request() {
 # FUNZIONI DI ANALISI METRICHE
 #======================================
 
+http_identify_asset_type() {
+    local url="$1"
+    
+    # Rimuovi parametri di query per analisi più pulita
+    local clean_url=$(echo "$url" | sed 's/\?.*$//')
+    
+    # Identifica il tipo basato sull'estensione
+    case "$clean_url" in
+        *.css) echo "CSS stylesheet" ;;
+        *.js) echo "JavaScript" ;;
+        *.png) echo "PNG image" ;;
+        *.jpg|*.jpeg) echo "JPEG image" ;;
+        *.gif) echo "GIF image" ;;
+        *.svg) echo "SVG image" ;;
+        *.ico) echo "Icon" ;;
+        *.woff|*.woff2) echo "Web font" ;;
+        *.ttf|*.eot) echo "Font file" ;;
+        *.pdf) echo "PDF document" ;;
+        *.mp3|*.wav) echo "Audio file" ;;
+        *.mp4|*.avi|*.mov|*.webm) echo "Video file" ;;
+        *.zip|*.rar|*.tar|*.gz) echo "Archive file" ;;
+        *.json) echo "JSON data" ;;
+        *.xml) echo "XML data" ;;
+        *.webp) echo "WebP image" ;;
+        *) echo "HTML page" ;;
+    esac
+}
+
+http_is_asset() {
+    local url="$1"
+    local asset_type=$(http_identify_asset_type "$url")
+    [[ "$asset_type" != "HTML page" ]]
+}
+
 http_parse_metrics() {
     local response="$1"
     local -n metrics_result=$2
@@ -322,8 +357,9 @@ http_parse_metrics() {
     # Inizializza l'array associativo
     declare -A temp_metrics
     
-    # Estrai la riga delle metriche e parseala usando awk
-    local metrics_line=$(echo "$response" | grep "^METRICS||" | tail -n1)
+    # Pulisci il response dai null bytes e estrai la riga delle metriche
+    local clean_response=$(echo "$response" | tr -d '\0')
+    local metrics_line=$(echo "$clean_response" | grep "^METRICS||" | tail -n1)
     
     if [[ -n "$metrics_line" ]]; then
         # Usa awk per parsing più robusto
@@ -417,14 +453,28 @@ http_extract_links() {
     # Reset dell'array
     result_array=()
     
-    # Estrai tutti i link href
+    # Estrai tutti i link href e src (se assets inclusi)
     local raw_links
-    raw_links=$(echo "${page_content}" | grep -oP 'href="[^"]*"' | sed 's/href="//g' | sed 's/"//g')
+    if [[ $INCLUDE_ASSETS -eq 1 ]]; then
+        # Includi sia href che src per assets completi
+        local href_links=$(echo "${page_content}" | grep -oP 'href="[^"]*"' | sed 's/href="//g' | sed 's/"//g')
+        local src_links=$(echo "${page_content}" | grep -oP 'src="[^"]*"' | sed 's/src="//g' | sed 's/"//g')
+        raw_links=$(printf "%s\n%s" "$href_links" "$src_links" | grep -v '^$')
+    else
+        # Solo href come prima
+        raw_links=$(echo "${page_content}" | grep -oP 'href="[^"]*"' | sed 's/href="//g' | sed 's/"//g')
+    fi
     
     if [[ -n "$raw_links" ]]; then
-        # Filtra via le estensioni di file
+        # Filtra via le estensioni di file solo se assets NON inclusi
         local filtered_links
-        filtered_links=$(echo "$raw_links" | grep -vE '\.(css|js|jpg|jpeg|png|gif|svg|ico|woff|woff2|ttf|eot|pdf|zip|rar|tar|gz|mp3|mp4|avi|mov|webm|webp)(\?.*)?$')
+        if [[ $INCLUDE_ASSETS -eq 1 ]]; then
+            # Se assets inclusi, non filtrare le estensioni
+            filtered_links="$raw_links"
+        else
+            # Se assets NON inclusi, filtra le estensioni come prima
+            filtered_links=$(echo "$raw_links" | grep -vE '\.(css|js|jpg|jpeg|png|gif|svg|ico|woff|woff2|ttf|eot|pdf|zip|rar|tar|gz|mp3|mp4|avi|mov|webm|webp)(\?.*)?$')
+        fi
         
         # Filtra per dominio e popola l'array rimuovendo duplicati
         declare -A seen_links
@@ -470,6 +520,9 @@ worker_test_url() {
     # Esegui la richiesta
     local page_result=$(http_request "$full_url" "false")
     
+    # Rimuovi null bytes che possono causare problemi
+    page_result=$(echo "$page_result" | tr -d '\0')
+    
     # Gestisci timeout e errori
     if [[ "$page_result" == "ERROR" ]] || [[ -z "$page_result" ]]; then
         log_message "ERROR" "Worker-${worker_id}: $full_url ERROR" "$(log_get_filename "$URLVALUE")"
@@ -479,21 +532,36 @@ worker_test_url() {
         declare -A metrics
         http_parse_metrics "$page_result" metrics
         
-        local status_code="${metrics[status_code]}"
-        local performance_msg=$(http_format_performance_log metrics "$full_url" "Worker-${worker_id}")
+        # Controllo di sicurezza per status_code
+        local status_code="${metrics[status_code]:-ERROR}"
         
-        # Log usando la funzione logger centralizzata con metriche
-        local log_filename=$(log_get_filename "$URLVALUE")
-        if [[ $status_code -ge 400 ]]; then
-            log_message "ERROR" "$performance_msg" "$log_filename"
-        elif [[ $status_code -ge 300 ]]; then
-            log_message "WARNING" "$performance_msg" "$log_filename"
+        # Se il parsing delle metriche è fallito, gestisci in base al tipo di risorsa
+        if [[ "$status_code" == "ERROR" ]] || [[ -z "$status_code" ]]; then
+            # Identifica se è un asset o una pagina HTML
+            if http_is_asset "$full_url"; then
+                local asset_type=$(http_identify_asset_type "$full_url")
+                log_message "INFO" "Worker-${worker_id}: $full_url OK ($asset_type downloaded)" "$(log_get_filename "$URLVALUE")"
+                echo "$(date +"%Y%m%d.%H%M%S%3N") [W${worker_id}] $full_url [ASSET_OK] $asset_type"
+            else
+                log_message "ERROR" "Worker-${worker_id}: $full_url PARSE_ERROR" "$(log_get_filename "$URLVALUE")"
+                echo "$(date +"%Y%m%d.%H%M%S%3N") [W${worker_id}] $full_url [PARSE_ERROR]"
+            fi
         else
-            log_message "INFO" "$performance_msg" "$log_filename"
+            local performance_msg=$(http_format_performance_log metrics "$full_url" "Worker-${worker_id}")
+            
+            # Log usando la funzione logger centralizzata con metriche
+            local log_filename=$(log_get_filename "$URLVALUE")
+            if [[ $status_code -ge 400 ]]; then
+                log_message "ERROR" "$performance_msg" "$log_filename"
+            elif [[ $status_code -ge 300 ]]; then
+                log_message "WARNING" "$performance_msg" "$log_filename"
+            else
+                log_message "INFO" "$performance_msg" "$log_filename"
+            fi
+            
+            # Output per il processo principale
+            echo "$(date +"%Y%m%d.%H%M%S%3N") [W${worker_id}] $full_url [${status_code}] ${metrics[time_total]:-0}s"
         fi
-        
-        # Output per il processo principale
-        echo "$(date +"%Y%m%d.%H%M%S%3N") [W${worker_id}] $full_url [${status_code}] ${metrics[time_total]}s"
     fi
 }
 
@@ -564,6 +632,7 @@ util_show_help(){
     echo "  -u URL        URL da testare (obbligatorio)"
     echo "  -d SECONDI    Delay tra le chiamate in secondi (default: 0.5)"
     echo "  -f            Segui tutti i link trovati nella pagina"
+    echo "  -a            Includi assets (CSS, JS, immagini) nei test"
     echo "  -j NUMERO     Numero di processi paralleli (default: 1)"
     echo "  -t            Modalità test: mostra i link trovati ed esce"
     echo "  -h            Mostra questa guida"
@@ -581,6 +650,12 @@ util_show_help(){
     echo "  # Stress test con 10 processi paralleli"
     echo "  $0 -j 10 -u https://example.com -d 0.1"
     echo ""
+    echo "  # Performance test completo con assets inclusi"
+    echo "  $0 -f -a -j 5 -u https://example.com"
+    echo ""
+    echo "  # Test assets per debugging performance"
+    echo "  $0 -t -a -u https://example.com"
+    echo ""
 
     echo "CONFIGURAZIONE:"
     echo "  File di configurazione: .headers.env"
@@ -591,7 +666,7 @@ util_show_help(){
     echo ""
     echo "FUNZIONALITÀ:"
     echo "  • Estrazione automatica dei link dalla pagina"
-    echo "  • Filtraggio di file CSS, JS, immagini e risorse statiche"
+    echo "  • Filtraggio configurabile di assets (CSS, JS, immagini) con opzione -a"
     echo "  • Filtraggio per mantenere solo i link del dominio principale"
     echo "  • Esecuzione parallela su più core CPU"
     echo "  • Logging centralizzato in formato: dominio-YYYY-MM-DD.log"
@@ -624,7 +699,7 @@ main() {
     # Carica la configurazione prima di processare gli argomenti
     config_load_headers_env "$CONFIG_FILE"
 
-    while getopts d:u:j:hft OPTIONS; do
+    while getopts d:u:j:hfta OPTIONS; do
         case "${OPTIONS}" in
             h) HELP=1;;
             d) DELAY=${OPTARG};;
@@ -632,6 +707,7 @@ main() {
             j) PARALLEL_JOBS=${OPTARG};;
             f) FOLLOW=1;;
             t) TEST=1;;
+            a) INCLUDE_ASSETS=1;;
         esac
     done
 
@@ -710,24 +786,32 @@ echo "Usando: curl (client HTTP)"
         # Testa URL principale
         page=$(http_request "$URLVALUE" "true")
         
+        # Rimuovi null bytes che possono causare problemi
+        page=$(echo "$page" | tr -d '\0')
+        
         # Parse delle metriche di performance
         declare -A main_metrics
         http_parse_metrics "$page" main_metrics
         
-        local status_code="${main_metrics[status_code]}"
+        local status_code="${main_metrics[status_code]:-ERROR}"
         local performance_msg=$(http_format_performance_log main_metrics "$URLVALUE" "Main")
         
         # Log usando la funzione logger centralizzata con metriche
         log_file=$(log_get_filename "$URLVALUE")
-        if [[ $status_code -ge 400 ]]; then
-            log_message "ERROR" "$performance_msg" "$log_file"
-        elif [[ $status_code -ge 300 ]]; then
-            log_message "WARNING" "$performance_msg" "$log_file"
+        if [[ "$status_code" == "ERROR" ]] || [[ -z "$status_code" ]]; then
+            log_message "ERROR" "Main: $URLVALUE PARSE_ERROR" "$log_file"
+            echo -ne "$(date +"%Y%m%d.%H%M%S%3N") URL: $URLVALUE [PARSE_ERROR]  \033[0K\r"
         else
-            log_message "INFO" "$performance_msg" "$log_file"
+            if [[ $status_code -ge 400 ]]; then
+                log_message "ERROR" "$performance_msg" "$log_file"
+            elif [[ $status_code -ge 300 ]]; then
+                log_message "WARNING" "$performance_msg" "$log_file"
+            else
+                log_message "INFO" "$performance_msg" "$log_file"
+            fi
+            
+            echo -ne "$(date +"%Y%m%d.%H%M%S%3N") URL: $URLVALUE [$status_code] ${main_metrics[time_total]:-0}s  \033[0K\r"
         fi
-        
-        echo -ne "$(date +"%Y%m%d.%H%M%S%3N") URL: $URLVALUE [$status_code] ${main_metrics[time_total]}s  \033[0K\r"
         
         # Se FOLLOW è attivo, testa i link in parallelo
         if [[ $FOLLOW -eq 1 ]]; then
