@@ -22,14 +22,28 @@ Tester Robot is a powerful Bash script designed for continuous website monitorin
 
 ## ⚡ Quick Start
 
+### Option 1: Basic Configuration
 ```bash
-# 1. Setup configuration
+# 1. Setup basic configuration
 cp headers.env.example .headers.env
 # Edit .headers.env with your tokens and settings
 
 # 2. Make script executable and test
 chmod +x tester_robot.sh
 ./tester_robot.sh -u https://example.com -t
+```
+
+### Option 2: Using Optimized Profiles (Recommended)
+```bash
+# 1. Make script executable
+chmod +x tester_robot.sh
+
+# 2. Use pre-optimized profiles
+./tester_robot.sh --profile wordpress -u https://wordpress-site.com -t
+./tester_robot.sh --profile laravel -u https://laravel-app.com -t
+
+# 3. See available profiles
+./tester_robot.sh --list-profiles
 ```
 
 For more information, use: `./tester_robot.sh -h`
@@ -169,13 +183,29 @@ Assets (CSS, JS, images) are logged with their type identification for easier de
 
 ## 🔧 Configuration
 
+### Configuration System Overview
+
+Tester Robot supports **two configuration methods**:
+
+1. **Basic Configuration** (`.headers.env`): General-purpose configuration file
+2. **Profile System** (`profiles/`): Pre-optimized configurations for specific application types
+
+#### Configuration Priority
+```bash
+# Profile specified: uses profiles/PROFILE.env
+./tester_robot.sh --profile wordpress -u https://site.com
+
+# No profile: uses .headers.env (if exists) or defaults
+./tester_robot.sh -u https://site.com
+```
+
 ### Configuration File (.headers.env)
-Tester Robot uses a flexible configuration system based on a `.headers.env` file that allows you to customize all HTTP headers, authentication tokens, and curl options without modifying the script.
+The `.headers.env` file serves as the **base configuration** when no profile is specified and as a **template for creating new profiles**.
 
 #### Initial Setup
 1. Copy the example configuration file: `cp headers.env.example .headers.env`
 2. Edit `.headers.env` with your specific values (tokens, headers, etc.)
-3. The script will automatically load the configuration on startup
+3. The script will automatically load this configuration when no `--profile` is specified
 
 #### Configuration Options
 
@@ -209,9 +239,24 @@ MIN_LOG_LEVEL="INFO"     # DEBUG, INFO, WARNING, ERROR, CRITICAL
 LOG_HEADERS="false"      # Set to "true" to log all HTTP headers
 ```
 
+### When to Use Each Configuration Method
+
+#### Use `.headers.env` when:
+- Setting up for the first time
+- Testing general websites without specific optimizations
+- Creating a personal base configuration
+- Working with legacy setups
+
+#### Use Profiles (`--profile NOME`) when:
+- Testing specific application types (Laravel, WordPress, etc.)
+- Need optimized settings for better performance
+- Working with team standardized configurations
+- Testing multiple different application types
+
 ### Fallback Behavior
-- If `.headers.env` is not found, the script uses sensible defaults
-- Empty values in the config file are ignored (defaults are used)
+- If no `--profile` specified: loads `.headers.env` → defaults
+- If `.headers.env` is not found: uses sensible defaults
+- Empty values in config files are ignored (defaults are used)
 - Invalid values are validated and corrected automatically
 
 ### Security Notes
