@@ -20,14 +20,47 @@ Tester Robot is a powerful Bash script designed for continuous website monitorin
 - **Real-time Monitoring**: Live status updates with timestamps
 - **Graceful Shutdown**: Proper cleanup of all background processes with Ctrl+C
 
+## ⚡ Quick Start
+
+```bash
+# 1. Setup configuration
+cp headers.env.example .headers.env
+# Edit .headers.env with your tokens and settings
+
+# 2. Make script executable and test
+chmod +x tester_robot.sh
+./tester_robot.sh -u https://example.com -t
+```
+
+For more information, use: `./tester_robot.sh -h`
+
+### Configuration Example
+Sample `.headers.env` configuration for monitoring a Laravel application:
+```bash
+# Authentication
+XSRF_TOKEN="eyJpdiI6Im..."
+SESSION_TOKEN="eyJpdiI6IkZSN2..."
+
+# Browser emulation (Chrome on Windows)
+USER_AGENT="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+ACCEPT="text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
+
+# Connection settings
+CONNECT_TIMEOUT="15"
+MAX_TIME="60"
+INSECURE="false"
+
+# Logging
+MIN_LOG_LEVEL="DEBUG"
+LOG_HEADERS="true"
+```
+
 ## 🚀 Installation
 
-1. Clone or download the script:
+1. Clone the repository:
 ```bash
-wget https://path-to-your-script/tester_robot.sh
-# or
-git clone <repository-url>
-cd tester-robot
+git clone https://github.com/riccardoRicciardelli/website-shell-tester.git
+cd website-shell-tester
 ```
 
 2. Make it executable:
@@ -112,24 +145,55 @@ logs/[domain]-YYYY-MM-DD.log
 
 ## 🔧 Configuration
 
-### HTTP Headers
-The script uses realistic browser headers to avoid detection:
-- User-Agent: Chrome 140.0.0.0
-- Accept headers for HTML, images, and other content types
-- Security headers (Sec-Fetch-*)
-- Dynamic Referer based on target domain
+### Configuration File (.headers.env)
+Tester Robot uses a flexible configuration system based on a `.headers.env` file that allows you to customize all HTTP headers, authentication tokens, and curl options without modifying the script.
 
-### Authentication
-Built-in support for:
-- XSRF tokens
-- Session cookies
-- Custom authentication headers
+#### Initial Setup
+1. Copy the example configuration file: `cp headers.env.example .headers.env`
+2. Edit `.headers.env` with your specific values (tokens, headers, etc.)
+3. The script will automatically load the configuration on startup
 
-Edit the script to modify these constants:
+#### Configuration Options
+
+**Authentication Tokens:**
 ```bash
-readonly XSRF_TOKEN="your_token_here"
-readonly SESSION_TOKEN="your_session_token_here"
+XSRF_TOKEN="your_xsrf_token_here"
+SESSION_TOKEN="your_session_token_here"
 ```
+
+**HTTP Headers (Browser Emulation):**
+```bash
+USER_AGENT="Mozilla/5.0 (Windows NT 10.0; Win64; x64)..."
+ACCEPT="text/html,application/xhtml+xml,application/xml..."
+ACCEPT_ENCODING="gzip, deflate, br, zstd"
+ACCEPT_LANGUAGE="it-IT,it;q=0.9,en-US;q=0.8,en;q=0.7"
+# ... and many more
+```
+
+**Curl Options:**
+```bash
+CONNECT_TIMEOUT="10"
+MAX_TIME="30"
+INSECURE="true"          # Set to "false" for strict SSL verification
+FOLLOW_REDIRECTS="true"  # Enable/disable redirect following
+MAX_REDIRECTS="10"
+```
+
+**Logging Configuration:**
+```bash
+MIN_LOG_LEVEL="INFO"     # DEBUG, INFO, WARNING, ERROR, CRITICAL
+LOG_HEADERS="false"      # Set to "true" to log all HTTP headers
+```
+
+### Fallback Behavior
+- If `.headers.env` is not found, the script uses sensible defaults
+- Empty values in the config file are ignored (defaults are used)
+- Invalid values are validated and corrected automatically
+
+### Security Notes
+- Keep `.headers.env` secure and do not commit it to version control
+- The file may contain sensitive authentication tokens
+- Add `.headers.env` to your `.gitignore` file
 
 ## 🏗️ Architecture
 

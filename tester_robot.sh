@@ -13,36 +13,43 @@ set -euo pipefail  # Strict mode
 
 readonly SCRIPT_NAME="tester_robot"
 readonly SCRIPT_VERSION="2.0.0"
-readonly DEFAULT_DELAY=0.5
-readonly DEFAULT_PARALLEL_JOBS=1
 readonly LOG_DIR="logs"
+readonly CONFIG_FILE=".headers.env"
 
-# autenticazione
-readonly XSRF_TOKEN="eyJpdiI6ImZXNE9CdjBob1B0bUEvbzZuSDRnTWc9PSIsInZhbHVlIjoiZmZzYnl3Z01hZ0xHOHBHai9sRlhVR1I2NlpzMGRGdzFRbHdySFYrbU9FNGpVMXFLdEM0YXJNNFdERlREYTZPQXVpMGoxbnFuUExBVTBOSVpoYkM3UHdvMm01b05zWnNlU0pLQ0dGSlRpSnFScUFWbzZ0aDVTdEZPclA3VkYxOTIiLCJtYWMiOiI4OTY5ZTRkZTljOWVlMTZiNTY3ODEyMjIxMzA1NDNlNDI3MmRmZWY2YTk1YmJjYzBkYjA1NmZiMmY1YTg4NzY5IiwidGFnIjoiIn0%3D"
-readonly SESSION_TOKEN="eyJpdiI6IkZSN2V0QzZaK3VNM0E1WlRSNE1SOVE9PSIsInZhbHVlIjoiaHdtQzkzcWFmUnR5d0VLMlNrU1J3NklHYVJGb1BRdSsxRHVpSlMzZ1g0RjVFK21TU2hHbjRHKzdkUGl1U0J1bmkrdm1RVDBneWFQMzcxZWsyVHp2NTM0SFA0SHpWYzhEMWRyVkZBSFRZZW12TnFKZE5FS3VnZDIvQnlvcjZMUmEiLCJtYWMiOiI3MjVhOWVmYzZiMmQ4NzRmMWEyMmU4YzM0NTdlZjZhZGUxMDljNzU2ZDI0NDlmMjUzNTY4YjBhNjk1YTcwZjkxIiwidGFnIjoiIn0%3D"
+# Valori di default (saranno sovrascritti dal file .headers.env se presente)
+DEFAULT_DELAY=0.5
+DEFAULT_PARALLEL_JOBS=1
+MIN_LOG_LEVEL="INFO"
 
-# logging
-MIN_LOG_LEVEL="INFO"  # DEBUG, INFO, WARNING, ERROR, CRITICAL
+# Variabili per autenticazione (caricate da .headers.env)
+XSRF_TOKEN=""
+SESSION_TOKEN=""
+
+# Variabili per headers HTTP (caricate da .headers.env)
+USER_AGENT=""
+ACCEPT=""
+ACCEPT_ENCODING=""
+ACCEPT_LANGUAGE=""
+CONNECTION=""
+SEC_FETCH_DEST=""
+SEC_FETCH_MODE=""
+SEC_FETCH_SITE=""
+SEC_FETCH_USER=""
+UPGRADE_INSECURE_REQUESTS=""
+SEC_CH_UA=""
+SEC_CH_UA_MOBILE=""
+SEC_CH_UA_PLATFORM=""
+
+# Variabili per opzioni curl
+CONNECT_TIMEOUT="10"
+MAX_TIME="30"
+INSECURE="true"
+FOLLOW_REDIRECTS="true"
+MAX_REDIRECTS="10"
+LOG_HEADERS="false"
 
 # REFERER_URL sarà impostato dinamicamente basato sull'URL target
 REFERER_URL=""
-
-# Template per headers HTTP (aggiornati con i valori dalla tua richiesta)
-readonly -a HTTP_HEADERS_TEMPLATE=(
-    "Accept: text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7"
-    "Accept-Encoding: gzip, deflate, br, zstd"
-    "Accept-Language: it-IT,it;q=0.9,en-US;q=0.8,en;q=0.7"
-    "Connection: keep-alive"
-    "Sec-Fetch-Dest: document"
-    "Sec-Fetch-Mode: navigate"
-    "Sec-Fetch-Site: same-origin"
-    "Sec-Fetch-User: ?1"
-    "Upgrade-Insecure-Requests: 1"
-    "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36"
-    "sec-ch-ua: \"Chromium\";v=\"140\", \"Not=A?Brand\";v=\"24\", \"Google Chrome\";v=\"140\""
-    "sec-ch-ua-mobile: ?0"
-    "sec-ch-ua-platform: \"Windows\""
-)
 
 # Array dinamico per gli headers HTTP che verrà popolato in runtime
 declare -a HTTP_HEADERS=()
@@ -66,6 +73,116 @@ URLVALUE=""
 
 # Array per i processi in background
 declare -a g_background_pids=()
+
+#======================================
+# FUNZIONI DI CONFIGURAZIONE
+#======================================
+
+config_load_headers_env() {
+    local config_file="$1"
+    
+    if [[ ! -f "$config_file" ]]; then
+        echo "WARNING: File di configurazione $config_file non trovato. Usando valori di default."
+        config_set_defaults
+        return 1
+    fi
+    
+    echo "INFO: Caricamento configurazione da: $config_file"
+    
+    # Disabilita temporaneamente strict mode
+    set +euo pipefail
+    
+    # Carica la configurazione facendo source del file filtrato (più sicuro)
+    while IFS='=' read -r key value; do
+        # Ignora commenti e righe vuote
+        [[ -z "$key" || "$key" =~ ^[[:space:]]*# ]] && continue
+        
+        # Pulisci key e value
+        key=$(echo "$key" | xargs)
+        value=$(echo "$value" | sed 's/#.*//' | sed 's/^"//;s/"$//' | xargs)
+        
+        # Assegna il valore alla variabile
+        case "$key" in
+            XSRF_TOKEN) XSRF_TOKEN="$value" ;;
+            SESSION_TOKEN) SESSION_TOKEN="$value" ;;
+            USER_AGENT) USER_AGENT="$value" ;;
+            ACCEPT) ACCEPT="$value" ;;
+            ACCEPT_ENCODING) ACCEPT_ENCODING="$value" ;;
+            ACCEPT_LANGUAGE) ACCEPT_LANGUAGE="$value" ;;
+            CONNECTION) CONNECTION="$value" ;;
+            SEC_FETCH_DEST) SEC_FETCH_DEST="$value" ;;
+            SEC_FETCH_MODE) SEC_FETCH_MODE="$value" ;;
+            SEC_FETCH_SITE) SEC_FETCH_SITE="$value" ;;
+            SEC_FETCH_USER) SEC_FETCH_USER="$value" ;;
+            UPGRADE_INSECURE_REQUESTS) UPGRADE_INSECURE_REQUESTS="$value" ;;
+            SEC_CH_UA) SEC_CH_UA="$value" ;;
+            SEC_CH_UA_MOBILE) SEC_CH_UA_MOBILE="$value" ;;
+            SEC_CH_UA_PLATFORM) SEC_CH_UA_PLATFORM="$value" ;;
+            CONNECT_TIMEOUT) CONNECT_TIMEOUT="$value" ;;
+            MAX_TIME) MAX_TIME="$value" ;;
+            INSECURE) INSECURE="$value" ;;
+            FOLLOW_REDIRECTS) FOLLOW_REDIRECTS="$value" ;;
+            MAX_REDIRECTS) MAX_REDIRECTS="$value" ;;
+            MIN_LOG_LEVEL) MIN_LOG_LEVEL="$value" ;;
+            LOG_HEADERS) LOG_HEADERS="$value" ;;
+            DEFAULT_DELAY) DEFAULT_DELAY="$value" ;;
+            DEFAULT_PARALLEL_JOBS) DEFAULT_PARALLEL_JOBS="$value" ;;
+        esac
+    done < <(grep -E '^[[:space:]]*[A-Z_]+=' "$config_file" 2>/dev/null)
+    
+    # Riabilita strict mode
+    set -euo pipefail
+    
+    # Imposta valori di default per quelli non trovati
+    config_set_defaults
+    
+    # Valida i valori caricati
+    # config_validate_values
+    
+    echo "DEBUG: Configurazione caricata con successo"
+    return 0
+}
+
+config_set_defaults() {
+    # Imposta valori di default se non caricati da file
+    XSRF_TOKEN="${XSRF_TOKEN:-}"
+    SESSION_TOKEN="${SESSION_TOKEN:-}"
+    USER_AGENT="${USER_AGENT:-Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36}"
+    ACCEPT="${ACCEPT:-text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7}"
+    ACCEPT_ENCODING="${ACCEPT_ENCODING:-gzip, deflate, br, zstd}"
+    ACCEPT_LANGUAGE="${ACCEPT_LANGUAGE:-it-IT,it;q=0.9,en-US;q=0.8,en;q=0.7}"
+    CONNECTION="${CONNECTION:-keep-alive}"
+    SEC_FETCH_DEST="${SEC_FETCH_DEST:-document}"
+    SEC_FETCH_MODE="${SEC_FETCH_MODE:-navigate}"
+    SEC_FETCH_SITE="${SEC_FETCH_SITE:-same-origin}"
+    SEC_FETCH_USER="${SEC_FETCH_USER:-?1}"
+    UPGRADE_INSECURE_REQUESTS="${UPGRADE_INSECURE_REQUESTS:-1}"
+    SEC_CH_UA="${SEC_CH_UA:-\"Chromium\";v=\"140\", \"Not=A?Brand\";v=\"24\", \"Google Chrome\";v=\"140\"}"
+    SEC_CH_UA_MOBILE="${SEC_CH_UA_MOBILE:-?0}"
+    SEC_CH_UA_PLATFORM="${SEC_CH_UA_PLATFORM:-\"Windows\"}"
+}
+
+config_validate_values() {
+    # Validazione base dei valori numerici
+    [[ ! "$CONNECT_TIMEOUT" =~ ^[0-9]+$ ]] && CONNECT_TIMEOUT=10
+    [[ ! "$MAX_TIME" =~ ^[0-9]+$ ]] && MAX_TIME=30
+    [[ ! "$MAX_REDIRECTS" =~ ^[0-9]+$ ]] && MAX_REDIRECTS=10
+    [[ ! "$DEFAULT_DELAY" =~ ^[0-9]+\.?[0-9]*$ ]] && DEFAULT_DELAY=0.5
+    [[ ! "$DEFAULT_PARALLEL_JOBS" =~ ^[0-9]+$ ]] && DEFAULT_PARALLEL_JOBS=1
+    
+    # Validazione valori booleani
+    [[ ! "$INSECURE" =~ ^(true|false)$ ]] && INSECURE="true"
+    [[ ! "$FOLLOW_REDIRECTS" =~ ^(true|false)$ ]] && FOLLOW_REDIRECTS="true"
+    [[ ! "$LOG_HEADERS" =~ ^(true|false)$ ]] && LOG_HEADERS="false"
+    
+    # Validazione log level
+    local valid_levels=("DEBUG" "INFO" "WARNING" "ERROR" "CRITICAL")
+    local level_valid=false
+    for level in "${valid_levels[@]}"; do
+        [[ "$MIN_LOG_LEVEL" == "$level" ]] && level_valid=true && break
+    done
+    [[ "$level_valid" == false ]] && MIN_LOG_LEVEL="INFO"
+}
 
 #======================================
 # FUNZIONI DI LOGGING
@@ -116,42 +233,75 @@ http_setup_headers() {
     
     # Estrai il dominio base dall'URL target
     local base_domain=$(echo "$target_url" | grep -oP 'https?://[^/]+')
+    local host_header=$(echo "$target_url" | grep -oP 'https?://\K[^/]+')
     REFERER_URL="$base_domain/"
     
-    # Popola l'array HTTP_HEADERS con il referer dinamico
+    # Popola l'array HTTP_HEADERS con le variabili dinamiche
     HTTP_HEADERS=()
-    for header in "${HTTP_HEADERS_TEMPLATE[@]}"; do
-        HTTP_HEADERS+=("$header")
-    done
+    
+    # Aggiungi headers solo se definiti (non vuoti)
+    [[ -n "$ACCEPT" ]] && HTTP_HEADERS+=("Accept: $ACCEPT")
+    [[ -n "$ACCEPT_ENCODING" ]] && HTTP_HEADERS+=("Accept-Encoding: $ACCEPT_ENCODING")
+    [[ -n "$ACCEPT_LANGUAGE" ]] && HTTP_HEADERS+=("Accept-Language: $ACCEPT_LANGUAGE")
+    [[ -n "$CONNECTION" ]] && HTTP_HEADERS+=("Connection: $CONNECTION")
+    [[ -n "$host_header" ]] && HTTP_HEADERS+=("Host: $host_header")
+    [[ -n "$SEC_FETCH_DEST" ]] && HTTP_HEADERS+=("Sec-Fetch-Dest: $SEC_FETCH_DEST")
+    [[ -n "$SEC_FETCH_MODE" ]] && HTTP_HEADERS+=("Sec-Fetch-Mode: $SEC_FETCH_MODE")
+    [[ -n "$SEC_FETCH_SITE" ]] && HTTP_HEADERS+=("Sec-Fetch-Site: $SEC_FETCH_SITE")
+    [[ -n "$SEC_FETCH_USER" ]] && HTTP_HEADERS+=("Sec-Fetch-User: $SEC_FETCH_USER")
+    [[ -n "$UPGRADE_INSECURE_REQUESTS" ]] && HTTP_HEADERS+=("Upgrade-Insecure-Requests: $UPGRADE_INSECURE_REQUESTS")
+    [[ -n "$USER_AGENT" ]] && HTTP_HEADERS+=("User-Agent: $USER_AGENT")
+    [[ -n "$SEC_CH_UA" ]] && HTTP_HEADERS+=("sec-ch-ua: $SEC_CH_UA")
+    [[ -n "$SEC_CH_UA_MOBILE" ]] && HTTP_HEADERS+=("sec-ch-ua-mobile: $SEC_CH_UA_MOBILE")
+    [[ -n "$SEC_CH_UA_PLATFORM" ]] && HTTP_HEADERS+=("sec-ch-ua-platform: $SEC_CH_UA_PLATFORM")
     
     # Aggiungi il header Referer con il dominio corretto
     HTTP_HEADERS+=("Referer: $REFERER_URL")
     
-    log_message "DEBUG" "Headers configurati con Referer: $REFERER_URL"
+    if [[ "$LOG_HEADERS" == "true" ]]; then
+        log_message "DEBUG" "Headers configurati: ${#HTTP_HEADERS[@]} headers"
+        for header in "${HTTP_HEADERS[@]}"; do
+            log_message "DEBUG" "  -> $header"
+        done
+    else
+        log_message "DEBUG" "Headers configurati con Referer: $REFERER_URL (${#HTTP_HEADERS[@]} headers totali)"
+    fi
 }
 
 http_request() {
     local url="$1"
     local use_headers="${2:-true}"
     
-    # Usa curl per tutte le richieste HTTP
-    if [[ "$use_headers" == "true" ]]; then
-        local curl_headers=()
-        for header in "${HTTP_HEADERS[@]}"; do
-            curl_headers+=("-H" "$header")
-        done
-        
-        curl -kfis "$url" \
-            --connect-timeout 10 \
-            --max-time 30 \
-            "${curl_headers[@]}" \
-            -b "XSRF-TOKEN=${XSRF_TOKEN}; tera_pa_session=${SESSION_TOKEN}" 2>/dev/null || echo "ERROR"
-    else
-        curl -kfis "$url" \
-            --connect-timeout 10 \
-            --max-time 30 \
-            -b "XSRF-TOKEN=${XSRF_TOKEN}; tera_pa_session=${SESSION_TOKEN}" 2>/dev/null || echo "ERROR"
+    # Costruisci opzioni curl dinamicamente
+    local curl_options=()
+    
+    # Timeout options
+    curl_options+=(--connect-timeout "$CONNECT_TIMEOUT")
+    curl_options+=(--max-time "$MAX_TIME")
+    
+    # SSL options
+    [[ "$INSECURE" == "true" ]] && curl_options+=(-k)
+    
+    # Redirect options
+    if [[ "$FOLLOW_REDIRECTS" == "true" ]]; then
+        curl_options+=(-L --max-redirs "$MAX_REDIRECTS")
     fi
+    
+    # Headers
+    if [[ "$use_headers" == "true" ]]; then
+        for header in "${HTTP_HEADERS[@]}"; do
+            curl_options+=("-H" "$header")
+        done
+    fi
+    
+    # Cookies per autenticazione (solo se definiti)
+    local cookie_string=""
+    [[ -n "$XSRF_TOKEN" ]] && cookie_string+="XSRF-TOKEN=${XSRF_TOKEN};"
+    [[ -n "$SESSION_TOKEN" ]] && cookie_string+=" tera_pa_session=${SESSION_TOKEN};"
+    [[ -n "$cookie_string" ]] && curl_options+=(-b "${cookie_string%;}")
+    
+    # Esegui la richiesta
+    curl -fis "$url" "${curl_options[@]}" 2>/dev/null || echo "ERROR"
 }
 
 #======================================
@@ -335,13 +485,20 @@ util_show_help(){
     echo "  $0 -j 10 -u https://example.com -d 0.1"
     echo ""
 
+    echo "CONFIGURAZIONE:"
+    echo "  File di configurazione: .headers.env"
+    echo "  • Headers HTTP personalizzabili"
+    echo "  • Token di autenticazione configurabili"
+    echo "  • Opzioni curl dinamiche"
+    echo "  • Copia .headers.env per personalizzare la configurazione"
+    echo ""
     echo "FUNZIONALITÀ:"
     echo "  • Estrazione automatica dei link dalla pagina"
     echo "  • Filtraggio di file CSS, JS, immagini e risorse statiche"
     echo "  • Filtraggio per mantenere solo i link del dominio principale"
     echo "  • Esecuzione parallela su più core CPU"
     echo "  • Logging centralizzato in formato: dominio-YYYY-MM-DD.log"
-    echo "  • Gestione di autenticazione con XSRF token e cookie di sessione"
+    echo "  • Gestione dinamica di autenticazione tramite file .headers.env"
     echo ""
     echo "LOGGING:"
     echo "  I risultati vengono salvati in:"
@@ -366,6 +523,9 @@ main() {
         util_show_help
         exit 1
     fi
+    
+    # Carica la configurazione prima di processare gli argomenti
+    config_load_headers_env "$CONFIG_FILE"
 
     while getopts d:u:j:hft OPTIONS; do
         case "${OPTIONS}" in
@@ -383,7 +543,7 @@ main() {
         exit 0
     fi
 
-    # Imposta valori di default
+    # Imposta valori di default (potenzialmente sovrascritti da .headers.env)
     DELAY=${DELAY:-$DEFAULT_DELAY}
     PARALLEL_JOBS=${PARALLEL_JOBS:-$DEFAULT_PARALLEL_JOBS}
 
@@ -397,17 +557,17 @@ main() {
     # Setup del logging
     log_setup
     
-    # Log del tool utilizzato
+    # Log delle informazioni di configurazione
     log_message "INFO" "Utilizzando curl per le richieste HTTP"
+    
+    if [[ -f "$CONFIG_FILE" ]]; then
+        log_message "INFO" "Configurazione caricata da: $CONFIG_FILE"
+    else
+        log_message "INFO" "Usando configurazione di default (file $CONFIG_FILE non trovato)"
+    fi
     
     # Configurazione dinamica degli headers HTTP basata sull'URL target
     http_setup_headers "$URLVALUE"
-    
-    # Preparazione headers per curl
-    local curl_headers=()
-    for header in "${HTTP_HEADERS[@]}"; do
-        curl_headers+=("-H" "$header")
-    done
 
     if [[ $TEST -eq 1 ]]; then
         
