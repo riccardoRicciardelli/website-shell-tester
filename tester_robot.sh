@@ -99,9 +99,14 @@ config_load_headers_env() {
         # Ignora commenti e righe vuote
         [[ -z "$key" || "$key" =~ ^[[:space:]]*# ]] && continue
         
-        # Pulisci key e value
-        key=$(echo "$key" | xargs)
-        value=$(echo "$value" | sed 's/#.*//' | sed 's/^"//;s/"$//' | xargs)
+        # Pulisci key e value (senza xargs per evitare problemi con quotes)
+        key=$(echo "$key" | tr -d ' \t')
+        value=$(echo "$value" | sed 's/#.*//' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+        # Rimuovi doppi apici esterni se presenti
+        if [[ "$value" =~ ^\".*\"$ ]]; then
+            value="${value#\"}"
+            value="${value%\"}"
+        fi
         
         # Assegna il valore alla variabile
         case "$key" in
@@ -418,6 +423,7 @@ http_request() {
     local cookie_string=""
     [[ -n "$XSRF_TOKEN" ]] && cookie_string+="XSRF-TOKEN=${XSRF_TOKEN};"
     [[ -n "$SESSION_TOKEN" ]] && cookie_string+=" tera_pa_session=${SESSION_TOKEN};"
+    
     [[ -n "$cookie_string" ]] && curl_options+=(-b "${cookie_string%;}")
     
     # Esegui la richiesta e pulisci null bytes per evitare warning bash
@@ -954,9 +960,10 @@ main() {
         links_array=()
         echo "Inizio estrazione link..."
         
-        # Estrazione diretta da curl con pulizia null bytes per siti WordPress
+        # Usa la funzione http_request per includere autenticazione
+        local test_page=$(http_request "$URLVALUE" "true")
         local base_domain_check=$(echo "$URLVALUE" | sed 's|https\?://||' | sed 's|/.*||')
-        local raw_links=$(curl -s --connect-timeout 20 --max-time 60 -k -L --max-redirs 10 "$URLVALUE" 2>/dev/null | tr -d '\0' | grep -oP 'href="[^"]*"' | sed 's/href="//g' | sed 's/"//g')
+        local raw_links=$(echo "$test_page" | grep -oP 'href="[^"]*"' | sed 's/href="//g' | sed 's/"//g')
         
         # Usa grep per filtrare direttamente
         local filtered_links=$(echo "$raw_links" | grep -E "^/|$base_domain_check")
