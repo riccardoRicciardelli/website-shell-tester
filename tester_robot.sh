@@ -615,11 +615,15 @@ http_extract_links() {
             filtered_links=$(echo "$raw_links" | grep -vE '\.(css|js|jpg|jpeg|png|gif|svg|ico|woff|woff2|ttf|eot|pdf|zip|rar|tar|gz|mp3|mp4|avi|mov|webm|webp)(\?.*)?$')
         fi
         
-        # Filtra per dominio e popola l'array (versione semplificata e veloce)
+        # Filtra per dominio e popola l'array (versione più permissiva)
         while IFS= read -r link; do
             [[ -n "$link" ]] || continue
-            # Controlla per link relativi o domini del sito
-            if [[ "$link" =~ ^/ ]] || [[ "$link" =~ ^https?://$base_domain_no_www ]] || [[ "$link" =~ ^https?://$base_domain_with_www ]]; then
+            # Controlla per link relativi o domini del sito (inclusi sottodomini)
+            if [[ "$link" =~ ^/ ]] || 
+               [[ "$link" =~ ^https?://[^/]*$base_domain_no_www ]] || 
+               [[ "$link" =~ ^https?://[^/]*$base_domain_with_www ]] || 
+               [[ "$link" =~ $base_domain_no_www ]] || 
+               [[ "$link" =~ $base_domain_with_www ]]; then
                 result_array+=("$link")
             fi
         done <<< "$filtered_links"
@@ -639,9 +643,12 @@ http_extract_links() {
 
 # Funzione per testare un URL in un processo separato
 worker_test_url() {
+    echo "[DEBUG] === WORKER $2 STARTED ===" >&2
     local url="$1"
     local worker_id="$2"
     local base_domain="$3"
+    
+    echo "[DEBUG] Worker $worker_id ricevuto URL: $url" >&2
     
     # Costruisci URL completo se necessario
     if [[ $url =~ ^/ ]]; then
@@ -650,6 +657,9 @@ worker_test_url() {
     else
         full_url="$url"
     fi
+
+    # DEBUG: stampa il link che viene testato
+    stdbuf -oL echo "[DEBUG][W${worker_id}] Testo link: $full_url"
     
     # Esegui la richiesta
     local page_result=$(http_request "$full_url" "false")
@@ -711,11 +721,16 @@ worker_test_url() {
 
 # Funzione per gestire i job paralleli
 process_manage_parallel_jobs() {
+    echo "[DEBUG] === INIZIO process_manage_parallel_jobs ==="
     local max_jobs="$1"
+    echo "[DEBUG] max_jobs ricevuto: '$max_jobs'"
     shift
     local urls=("$@")
+    echo "[DEBUG] Numero di URL ricevuti: ${#urls[@]}"
     local -a pids=()
     local worker_id=1
+    
+    echo "[DEBUG] Avvio di ${#urls[@]} job con max $max_jobs processi paralleli"
     
     for url in "${urls[@]}"; do
         # Aspetta se abbiamo raggiunto il limite massimo di job
@@ -736,20 +751,29 @@ process_manage_parallel_jobs() {
         done
         
         # Avvia nuovo job in background  
+        echo "[DEBUG] Avvio worker $worker_id per URL: $url"
         worker_test_url "$url" "$worker_id" "$base_domain" &
-        pids+=("$!")
+        local new_pid=$!
+        pids+=("$new_pid")
+        echo "[DEBUG] Worker $worker_id avviato con PID: $new_pid"
         ((worker_id++))
         
         # Breve pausa tra i job per evitare sovraccarico
         sleep 0.05
     done
     
+    echo "[DEBUG] Tutti i worker avviati. In attesa di ${#pids[@]} processi..."
+    
     # Aspetta che tutti i job finiscano
     for pid in "${pids[@]}"; do
         if kill -0 "$pid" 2>/dev/null; then
+            echo "[DEBUG] In attesa del PID: $pid"
             wait "$pid" 2>/dev/null || true
+            echo "[DEBUG] PID $pid completato"
         fi
     done
+    
+    echo "[DEBUG] Tutti i processi worker completati"
 }
 
 #======================================
@@ -1050,13 +1074,21 @@ echo "Usando: curl (client HTTP)"
             http_extract_links "$page" "$URLVALUE" links_array
             
             if [[ ${#links_array[@]} -gt 0 ]]; then
-                echo -e "\n[FOLLOW] Testando ${#links_array[@]} link con $PARALLEL_JOBS processi paralleli..."
+                echo -e "\n[FOLLOW] Trovati ${#links_array[@]} link:"
+                printf '  -> %s\n' "${links_array[@]}"
+                echo "[FOLLOW] Testando ${#links_array[@]} link con $PARALLEL_JOBS processi paralleli..."
                 
                 # Esegui test paralleli sui link
-                base_domain=$(echo "$URLVALUE" | grep -oP 'https?://[^/]+' | sed 's|https\?://||')
+                local base_domain=$(echo "$URLVALUE" | grep -oP 'https?://[^/]+' | sed 's|https\?://||')
+                echo "[DEBUG] Base domain estratto: '$base_domain'"
+                echo "[DEBUG] Chiamata process_manage_parallel_jobs con $PARALLEL_JOBS job"
                 process_manage_parallel_jobs "$PARALLEL_JOBS" "${links_array[@]}"
+                local exit_code=$?
+                echo "[DEBUG] process_manage_parallel_jobs terminato con exit code: $exit_code"
                 
                 echo "[FOLLOW] Test paralleli completati."
+            else
+                echo -e "\n[FOLLOW] Nessun link trovato nella pagina per il follow."
             fi
     fi
     
